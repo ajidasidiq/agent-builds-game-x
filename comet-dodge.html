@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comet Dodge — a tiny browser game</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #050510; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- stars ----
+  var stars = [];
+  for (var i = 0; i < 140; i++) {
+    stars.push({
+      x: Math.random(), y: Math.random(),
+      r: Math.random() * 1.6 + 0.4,
+      tw: Math.random() * Math.PI * 2,
+      sp: 0.5 + Math.random() * 2
+    });
+  }
+
+  // ---- state ----
+  var state = 'ready'; // ready | playing | over
+  var score = 0;
+  var elapsed = 0;      // seconds survived
+  var spawnTimer = 0;
+  var asteroids = [];
+  var trail = [];
+  var startTime = 0;
+  var lastTs = 0;
+  var crashFlash = 0;
+
+  var comet = {
+    x: 0, y: 0, vx: 0, vy: 0, r: 16,
+    hue: 185
+  };
+
+  function resetComet() {
+    comet.x = canvas.width * 0.28;
+    comet.y = canvas.height * 0.5;
+    comet.vx = 0; comet.vy = 0;
+  }
+  resetComet();
+
+  // ---- input ----
+  var keys = {};
+  var KEYMAP = {
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right'
+  };
+  window.addEventListener('keydown', function (e) {
+    var dir = KEYMAP[e.code];
+    if (dir) {
+      keys[dir] = true;
+      e.preventDefault();
+      if (state === 'ready') startGame();
+    }
+    if ((e.code === 'KeyR' || e.code === 'Enter' || e.code === 'Space') && state === 'over') {
+      startGame();
+    }
+  });
+  window.addEventListener('keyup', function (e) {
+    var dir = KEYMAP[e.code];
+    if (dir) keys[dir] = false;
+  });
+  canvas.addEventListener('pointerdown', function () {
+    if (state === 'ready' || state === 'over') startGame();
+  });
+
+  function startGame() {
+    state = 'playing';
+    score = 0;
+    elapsed = 0;
+    asteroids = [];
+    trail = [];
+    spawnTimer = 0.6;
+    resetComet();
+    startTime = performance.now();
+  }
+
+  function spawnAsteroid() {
+    var r = 14 + Math.random() * 34;
+    var y = r + Math.random() * (canvas.height - 2 * r);
+    var speed = 180 + Math.random() * 160 + elapsed * 6;
+    var verts = [];
+    var n = 8 + Math.floor(Math.random() * 4);
+    for (var i = 0; i < n; i++) {
+      verts.push(0.75 + Math.random() * 0.45);
+    }
+    asteroids.push({
+      x: canvas.width + r + 10, y: y, r: r,
+      vx: -speed, rot: Math.random() * Math.PI * 2,
+      vr: (Math.random() - 0.5) * 2.2,
+      verts: verts
+    });
+  }
+
+  function update(dt) {
+    if (state !== 'playing') return;
+    elapsed += dt;
+    score = Math.floor(elapsed * 10);
+
+    // steering: smooth acceleration + damping
+    var accel = 2600;
+    if (keys.up) comet.vy -= accel * dt;
+    if (keys.down) comet.vy += accel * dt;
+    if (keys.left) comet.vx -= accel * dt;
+    if (keys.right) comet.vx += accel * dt;
+    comet.vx *= Math.pow(0.12, dt);
+    comet.vy *= Math.pow(0.12, dt);
+    var maxV = 620;
+    var sp = Math.hypot(comet.vx, comet.vy);
+    if (sp > maxV) { comet.vx *= maxV / sp; comet.vy *= maxV / sp; }
+    comet.x += comet.vx * dt;
+    comet.y += comet.vy * dt;
+    comet.x = Math.max(comet.r, Math.min(canvas.width - comet.r, comet.x));
+    comet.y = Math.max(comet.r, Math.min(canvas.height - comet.r, comet.y));
+
+    // glowing trail
+    trail.push({ x: comet.x, y: comet.y });
+    if (trail.length > 42) trail.shift();
+
+    // asteroids spawn faster the longer you survive
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnAsteroid();
+      var interval = Math.max(0.32, 0.95 - elapsed * 0.022);
+      spawnTimer = interval * (0.7 + Math.random() * 0.6);
+    }
+    for (var i = asteroids.length - 1; i >= 0; i--) {
+      var a = asteroids[i];
+      a.x += a.vx * dt;
+      a.rot += a.vr * dt;
+      if (a.x < -a.r - 20) { asteroids.splice(i, 1); continue; }
+      var dx = a.x - comet.x, dy = a.y - comet.y;
+      if (Math.hypot(dx, dy) < a.r + comet.r * 0.72) {
+        state = 'over';
+        crashFlash = 1;
+        break;
+      }
+    }
+  }
+
+  function drawBackground(t) {
+    ctx.fillStyle = '#050510';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var a = 0.35 + 0.65 * Math.abs(Math.sin(t * 0.001 * s.sp + s.tw));
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#cfe6ff';
+      ctx.beginPath();
+      ctx.arc(s.x * canvas.width, s.y * canvas.height, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawTrail() {
+    for (var i = 0; i < trail.length; i++) {
+      var p = trail[i];
+      var f = i / trail.length;
+      var r = comet.r * (0.25 + 0.75 * f);
+      var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.4);
+      grad.addColorStop(0, 'rgba(0,229,255,' + (0.55 * f) + ')');
+      grad.addColorStop(0.5, 'rgba(120,80,255,' + (0.28 * f) + ')');
+      grad.addColorStop(1, 'rgba(120,80,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawComet(t) {
+    var pulse = 1 + 0.12 * Math.sin(t * 0.008);
+    ctx.save();
+    ctx.shadowColor = '#00e5ff';
+    ctx.shadowBlur = 34;
+    var grad = ctx.createRadialGradient(
+      comet.x, comet.y, 0, comet.x, comet.y, comet.r * 2.1);
+    grad.addColorStop(0, '#ffffff');
+    grad.addColorStop(0.35, '#7df9ff');
+    grad.addColorStop(0.7, '#00b3ff');
+    grad.addColorStop(1, 'rgba(124,77,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(comet.x, comet.y, comet.r * 2.1 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // bright core
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(comet.x, comet.y, comet.r * 0.55, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawAsteroids() {
+    for (var i = 0; i < asteroids.length; i++) {
+      var a = asteroids[i];
+      ctx.save();
+      ctx.translate(a.x, a.y);
+      ctx.rotate(a.rot);
+      ctx.beginPath();
+      for (var j = 0; j < a.verts.length; j++) {
+        var ang = (j / a.verts.length) * Math.PI * 2;
+        var rr = a.r * a.verts[j];
+        if (j === 0) ctx.moveTo(Math.cos(ang) * rr, Math.sin(ang) * rr);
+        else ctx.lineTo(Math.cos(ang) * rr, Math.sin(ang) * rr);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#3a3345';
+      ctx.fill();
+      ctx.strokeStyle = '#8d7fb0';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.beginPath();
+      ctx.arc(-a.r * 0.25, -a.r * 0.3, a.r * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawHud() {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = '700 44px system-ui, sans-serif';
+    ctx.fillText('SCORE ' + score, canvas.width / 2, 64);
+    ctx.font = '500 24px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillText(elapsed.toFixed(1) + 's  ·  COMET DODGE', canvas.width / 2, 102);
+  }
+
+  function drawCenter(lines, y0, gap) {
+    ctx.textAlign = 'center';
+    var y = y0;
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      ctx.font = L.font;
+      ctx.fillStyle = L.color;
+      ctx.fillText(L.text, canvas.width / 2, y);
+      y += gap;
+    }
+  }
+
+  function draw(t) {
+    drawBackground(t);
+    if (state === 'ready') {
+      drawCenter([
+        { text: 'COMET DODGE', font: '800 84px system-ui, sans-serif', color: '#7df9ff' },
+        { text: 'a neon comet dodging asteroids', font: '400 32px system-ui, sans-serif', color: 'rgba(255,255,255,0.75)' },
+        { text: 'Arrow keys or WASD to steer', font: '600 34px system-ui, sans-serif', color: '#ffffff' },
+        { text: 'survive as long as you can', font: '400 28px system-ui, sans-serif', color: 'rgba(255,255,255,0.55)' }
+      ], canvas.height / 2 - 90, 74);
+    } else {
+      drawTrail();
+      drawComet(t);
+      drawAsteroids();
+      drawHud();
+      if (state === 'over') {
+        ctx.fillStyle = 'rgba(5,5,16,0.62)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (crashFlash > 0.02) {
+          ctx.fillStyle = 'rgba(255,60,80,' + (crashFlash * 0.35) + ')';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        drawCenter([
+          { text: 'GAME OVER', font: '800 96px system-ui, sans-serif', color: '#ff4d6d' },
+          { text: 'SCORE ' + score, font: '700 56px system-ui, sans-serif', color: '#ffffff' },
+          { text: 'SURVIVED ' + elapsed.toFixed(1) + 's', font: '500 36px system-ui, sans-serif', color: 'rgba(255,255,255,0.75)' },
+          { text: 'Press R or tap to restart', font: '400 30px system-ui, sans-serif', color: 'rgba(255,255,255,0.55)' }
+        ], canvas.height / 2 - 130, 92);
+      }
+    }
+  }
+
+  function frame(ts) {
+    var dt = lastTs ? Math.min(0.05, (ts - lastTs) / 1000) : 0.016;
+    lastTs = ts;
+    if (crashFlash > 0) crashFlash = Math.max(0, crashFlash - dt * 1.4);
+    update(dt);
+    draw(ts);
+    window.__game = { state: state, score: score, elapsed: elapsed,
+      comet: { x: comet.x, y: comet.y, r: comet.r },
+      asteroids: asteroids.map(function (a) { return { x: a.x, y: a.y, r: a.r }; }) };
+    requestAnimationFrame(frame);
+  }
+
+  if (new URLSearchParams(location.search).get('play') === '1') {
+    startGame();
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
